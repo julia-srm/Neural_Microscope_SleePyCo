@@ -1,0 +1,8 @@
+scikit-learn
+termcolor
+terminaltables
+pyedflib
+gdown
+optuna
+matplotlib
+pandas
