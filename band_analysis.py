@@ -2,25 +2,23 @@
 Bandleistungs-Analyse für Schlaf-EEG (.npz mit x[n_epochs, n_samples], y, fs).
 
 Aufruf:
-    python band_analysis.py /pfad/zu/ordner --out ergebnisse
-    python band_analysis.py /pfad/zu/ordner --groups "ANPHY=EPCTL*" "DOD-H=*" --out ergebnisse
+    python band_analysis.py /pfad/datensatz1 /pfad/datensatz2 --names ANPHY DOD-H --out ergebnisse
 
---groups: Name=Glob-Muster (Dateiname). Wird ein Muster zuerst gefunden, gewinnt es
-          (Reihenfolge beachten: spezifische Muster zuerst, "*" zuletzt).
-          Ohne --groups wird eine einzige Gruppe "all" gebildet.
+Zwei Datensätze (Ordner) werden eingelesen und in denselben Abbildungen verglichen.
 """
-import argparse, fnmatch, glob, os, re
+import argparse, glob, os, re
 import numpy as np, pandas as pd
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.signal import welch
 from scipy.stats import mannwhitneyu
+from scipy.stats import ttest_ind   # oben bei den Imports ergänzen
 
 BANDS = {"Delta/K (1-3 Hz)": (1, 3), "Theta (4-7 Hz)": (4, 7), "Alpha (8-13 Hz)": (8, 13),
          "Spindel (12-14 Hz)": (12, 14), "Beta (13-40 Hz)": (13, 40)}
 TOTAL = (1, 40)                       # Referenzbereich für relative Leistung
 STAGES = {0: "W", 1: "N1", 2: "N2", 3: "N3", 4: "REM"}   # Label 6 etc. wird verworfen
-PALETTE = ["#1f77b4", "#e08a1e", "#2a9d8f", "#9b5de5"]
+PALETTE = ["#1f77b4", "#e08a1e"]
 
 
 def band_power(f, P, lo, hi):
@@ -39,35 +37,29 @@ def load_file(path, win_s=4):
     return df, f, P, y
 
 
-def group_of(fname, groups):
-    for g, pat in groups:
-        if fnmatch.fnmatch(fname, pat):
-            return g
-    return None
-
-
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("folder"); ap.add_argument("--out", default="band_out")
-    ap.add_argument("--groups", nargs="*", default=None)
+    ap.add_argument("folder1"); ap.add_argument("folder2")
+    ap.add_argument("--names", nargs=2, default=None, help="Namen der beiden Datensätze")
+    ap.add_argument("--out", default="band_out")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    groups = [tuple(g.split("=", 1)) for g in a.groups] if a.groups else [("all", "*")]
+    folders = [a.folder1, a.folder2]
+    names = a.names or [os.path.basename(os.path.normpath(p)) for p in folders]
+    if names[0] == names[1]:
+        names = [f"{names[0]}_1", f"{names[1]}_2"]
 
-    rows, psd = [], {}
-    for path in sorted(glob.glob(os.path.join(a.folder, "*.npz"))):
-        fname = os.path.basename(path)
-        fname_clean = re.sub(r"^[0-9a-f]{8}-\d+_", "", fname)   # Upload-Präfix entfernen
-        grp = group_of(fname_clean, groups)
-        if grp is None:
-            continue
-        df, f, P, y = load_file(path)
-        df["group"], df["subject"] = grp, fname_clean[:-4]
-        rows.append(df)
-        for s, sn in STAGES.items():                              # mittlere PSD pro Subjekt/Stadium
-            if (y == s).any():
-                psd.setdefault((grp, sn), []).append(P[y == s].mean(0))
-        print(f"{fname_clean}: {len(df)} Epochen -> Gruppe {grp}")
+    rows, psd, f = [], {}, None
+    for grp, folder in zip(names, folders):
+        for path in sorted(glob.glob(os.path.join(folder, "*.npz"))):
+            fname_clean = re.sub(r"^[0-9a-f]{8}-\d+_", "", os.path.basename(path))  # Upload-Präfix entfernen
+            df, f, P, y = load_file(path)
+            df["group"], df["subject"] = grp, f"{grp}/{fname_clean[:-4]}"
+            rows.append(df)
+            for s, sn in STAGES.items():                          # mittlere PSD pro Subjekt/Stadium
+                if (y == s).any():
+                    psd.setdefault((grp, sn), []).append(P[y == s].mean(0))
+            print(f"{fname_clean}: {len(df)} Epochen -> {grp}")
     E = pd.concat(rows, ignore_index=True)
     E = E[E.y.isin(STAGES)].copy()
     E["stage"] = E.y.map(STAGES)
@@ -78,31 +70,36 @@ def main():
     rel = ["rel_" + b for b in BANDS]
     S = E.groupby(["group", "subject", "stage"])[rel].median().reset_index()
     S.to_csv(f"{a.out}/subject_stage_medians.csv", index=False)
-    summ = S.groupby(["group", "stage"])[rel].agg(["median", "std", "count"])
-    summ.to_csv(f"{a.out}/group_summary.csv")
+    S.groupby(["group", "stage"])[rel].agg(["median", "std", "count"]).to_csv(f"{a.out}/group_summary.csv")
 
-    # Gruppenvergleich (nur bei genau 2 Gruppen)
-    names = [g for g, _ in groups]
-    if len(names) == 2:
-        r = []
-        for st in STAGES.values():
-            for b in BANDS:
-                v1 = S[(S.group == names[0]) & (S.stage == st)]["rel_" + b]
-                v2 = S[(S.group == names[1]) & (S.stage == st)]["rel_" + b]
-                if len(v1) and len(v2):
-                    u = mannwhitneyu(v1, v2)
-                    r.append(dict(stage=st, band=b, **{f"{names[0]}_median": v1.median(), f"{names[1]}_median": v2.median()},
-                                  p=u.pvalue, cliffs_delta=2 * u.statistic / (len(v1) * len(v2)) - 1))
-        pd.DataFrame(r).to_csv(f"{a.out}/group_comparison.csv", index=False)
 
-    col = {g: PALETTE[i % len(PALETTE)] for i, g in enumerate(names)}
+    # Vergleich der beiden Datensätze: Welch-t-Test + Bonferroni
+    r = []
+    for st in STAGES.values():
+        for b in BANDS:
+            v1 = S[(S.group == names[0]) & (S.stage == st)]["rel_" + b]
+            v2 = S[(S.group == names[1]) & (S.stage == st)]["rel_" + b]
+            if len(v1) > 1 and len(v2) > 1:
+                t = ttest_ind(v1, v2, equal_var=False)          # Welch: ungleiche Varianzen/Gruppengrößen erlaubt
+                sd_pool = np.sqrt((v1.var(ddof=1) + v2.var(ddof=1)) / 2)
+                r.append(dict(stage=st, band=b,
+                            **{f"{names[0]}_mean": v1.mean(), f"{names[1]}_mean": v2.mean()},
+                            t=t.statistic, p=t.pvalue, cohens_d=(v1.mean() - v2.mean()) / sd_pool))
+    res = pd.DataFrame(r)
+    res["p_bonf"] = (res.p * len(res)).clip(upper=1)            # Bonferroni: p × Anzahl Tests (hier 5 Stadien × 5 Bänder = 25)
+    res["signifikant"] = res.p_bonf < 0.05
+    res.to_csv(f"{a.out}/group_comparison.csv", index=False)
+    col = {g: PALETTE[i] for i, g in enumerate(names)}
     order = list(STAGES.values())
+    band_list = list(BANDS)
+    band_labels = [b.replace(" (", "\n(") for b in band_list]
 
-    # Abb. 1: Boxplots relative Bandleistung (Punkte = Subjekte)
-    fig, ax = plt.subplots(1, len(BANDS), figsize=(3.4 * len(BANDS), 3.8))
+    # Abb. 1: ein Panel pro Schlafstadium, x = Bänder, Boxen = Datensätze, gemeinsame y-Achse
+    ymax = S[rel].max().max() * 1.05
+    fig, ax = plt.subplots(1, len(order), figsize=(3.6 * len(order), 4), sharey=True)
     rng = np.random.default_rng(0)
-    for a_, b in zip(ax, BANDS):
-        for i, st in enumerate(order):
+    for a_, st in zip(ax, order):
+        for i, b in enumerate(band_list):
             for j, g in enumerate(names):
                 v = S[(S.group == g) & (S.stage == st)]["rel_" + b].values
                 if not len(v): continue
@@ -110,13 +107,19 @@ def main():
                 a_.boxplot(v, positions=[x0], widths=.32, showfliers=False, patch_artist=True,
                            boxprops=dict(facecolor=col[g], alpha=.45), medianprops=dict(color="k"))
                 a_.scatter(x0 + rng.uniform(-.06, .06, len(v)), v, s=8, color=col[g], zorder=3)
-        a_.set_xticks(range(len(order))); a_.set_xticklabels(order); a_.set_title(b, fontsize=10)
+            p = res.set_index(["stage", "band"]).p_bonf.get((st, b), np.nan)
+            stars = "***" if p < .001 else "**" if p < .01 else "*" if p < .05 else ""
+            if stars:
+                top = S[(S.stage == st)]["rel_" + b].max()
+                a_.text(i, top + ymax * 0.02, stars, ha="center", va="bottom", fontsize=12)
+        a_.set_xticks(range(len(band_list))); a_.set_xticklabels(band_labels, fontsize=7)
+        a_.set_title(st, fontsize=10); a_.set_ylim(0, ymax)
         a_.spines[["top", "right"]].set_visible(False)
     ax[0].set_ylabel(f"relative Leistung (Anteil an {TOTAL[0]}-{TOTAL[1]} Hz)")
     for g in names:
-        ax[0].plot([], [], color=col[g], lw=6, alpha=.5, label=f"{g} (n={S[S.group==g].subject.nunique()})")
+        ax[0].plot([], [], color=col[g], lw=6, alpha=.5, label=f"{g} (n={S[S.group == g].subject.nunique()})")
     ax[0].legend(frameon=False, fontsize=8)
-    plt.tight_layout(); plt.savefig(f"{a.out}/band_power_boxplots.png", dpi=200); plt.close()
+    plt.tight_layout(); fig.text(0.99, 0.01, "* p<0.05, ** p<0.01, *** p<0.001 (Welch-t, Bonferroni)", ha="right", fontsize=7); plt.savefig(f"{a.out}/band_power_boxplots.png", dpi=200); plt.close()
 
     # Abb. 2: mittlere PSD pro Stadium (log-log, Mittel über Subjekte, Bänder schattiert)
     fig, ax = plt.subplots(1, len(order), figsize=(3.4 * len(order), 3.4), sharey=True)
