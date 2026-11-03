@@ -28,7 +28,11 @@ class EEGDataLoader(Dataset):
 
         self.dataset_path = os.path.join(self.root_dir, 'dset', self.dset_name, 'npz')
         self.inputs, self.labels, self.epochs = self.split_dataset()
-        
+        # eine ID pro Sample, gleiche Reihenfolge wie __getitem__ / Labels
+        self.subject_ids = np.array(
+            [os.path.splitext(self.file_names[e[0]])[0] for e in self.epochs]
+        )
+
         if self.training_mode == 'pretrain':
             self.transform = Compose(
                 transforms=[
@@ -106,7 +110,8 @@ class EEGDataLoader(Dataset):
                     data_fname_dict[self.set].append(data_fname_list[i])
         else:
             raise NameError("dataset '{}' cannot be found.".format(self.dset_name))
-            
+
+        self.file_names = list(data_fname_dict[self.set])    
         for data_fname in data_fname_dict[self.set]:
             npz_file = np.load(os.path.join(data_root, data_fname))
             inputs.append(npz_file['x'])

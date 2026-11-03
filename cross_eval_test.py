@@ -17,6 +17,24 @@ from loader import EEGDataLoader
 from models.main_model import MainModel
 
 
+"""
+Script aufrufen via: 
+python cross_eval_test.py --src-config configs/anphy.json --tgt-config configs/anphy.json \
+    --cm-out results/anphy_to_anphy_cm.npy --gpu 0
+
+python cross_eval_test.py --src-config configs/anphy.json --tgt-config configs/dodh.json \
+    --cm-out results/anphy_to_dodh_cm.npy --gpu 0
+
+if ckp.folder is not the default one:
+python cross_eval_test.py \
+  --src-config configs/SleePyCo-Transformer_SL-10_numScales-3_DOD-H_scratch.json \
+  --tgt-config configs/SleePyCo-Transformer_SL-10_numScales-3_ANPHY_scratch.json \
+  --ckpt-dir checkpoints/SleePyCo-Transformer_SL-10_numScales-3_DOD-H_scratch_final \
+  --gpu 0
+```
+     """
+
+
 def compute_confusion_matrix(y_true, y_pred, num_classes):
     """Compute the confusion matrix for a set of true and predicted labels."""
     y_true = np.asarray(y_true, dtype=int)
@@ -209,6 +227,9 @@ class CrossDatasetEvaluator:
             for k in sorted(list(missing))[:10]:
                 print('       - {}'.format(k))
 
+        if skipped or missing:
+            raise RuntimeError(f'Checkpoint unvollständig: {len(skipped)} Shape-Mismatches, {len(missing)} fehlend')
+
         self.model.load_state_dict(filtered_state, strict=False)
         print('[INFO] Loaded source checkpoint with shape-compatible parameters only.')
 
@@ -245,8 +266,10 @@ class CrossDatasetEvaluator:
         print('\n[INFO] Fold: {}'.format(self.fold))
         self.load_cross_checkpoint()
         y_true, y_pred = self.evaluate(mode='test')
+        subj = self.loader_dict['test'].dataset.subject_ids
+        assert len(subj) == len(y_true), 'subject_ids und Labels nicht aligned'
         print('')
-        return y_true, y_pred
+        return y_true, y_pred, subj
 
 
 def main():
@@ -286,13 +309,14 @@ def main():
 
     Y_true = np.zeros(0)
     Y_pred = np.zeros((0, target_cfg['classifier']['num_classes']))
+    Y_subj = np.array([], dtype=str)
 
     for fold in range(1, target_cfg['dataset']['num_splits'] + 1):
         evaluator = CrossDatasetEvaluator(args, fold, target_cfg, ckpt_dir)
-        y_true, y_pred = evaluator.run()
+        y_true, y_pred, subj = evaluator.run()
         Y_true = np.concatenate([Y_true, y_true])
         Y_pred = np.concatenate([Y_pred, y_pred])
-
+        Y_subj = np.concatenate([Y_subj, subj])
         summarize_result(target_cfg, fold, Y_true, Y_pred)
 
     y_pred_argmax = np.argmax(Y_pred, axis=1)
@@ -311,6 +335,20 @@ def main():
 
     np.save(cm_out, cm)
     print('[INFO] Confusion matrix saved to {}'.format(cm_out))
+
+    K = target_cfg['classifier']['num_classes']
+    ids = np.unique(Y_subj)
+    M = np.stack([
+        confusion_matrix(Y_true[Y_subj == s].astype(int),
+                         y_pred_argmax[Y_subj == s], labels=list(range(K)))
+        for s in ids
+    ])
+    assert (M.sum(0) == cm).all()
+    #assert len(ids) == len(set(ids)), 'ID doppelt über Folds'
+    ps_out = os.path.splitext(cm_out)[0] + '_persubject.npz'
+    #ps_out = cm_out.replace('_cm.npy', '_persubject.npz')
+    np.savez(ps_out, cm_per_subject=M, subjects=ids)
+    print('[INFO] Per-subject confusion matrices saved to {}'.format(ps_out))
 
     if args.cm_jpg is not None:
         jpg_dir = os.path.dirname(args.cm_jpg)
