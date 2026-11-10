@@ -48,6 +48,31 @@ pip install -r requirements.txt
 ```
 
 ### Dataset Preparation
+
+#### Browse preprocessed EEG
+
+To interactively inspect a single-channel recording, run the viewer from the
+repository root. It starts a local web server and opens a browser when a
+desktop is available. In a headless or VS Code Remote session, open the URL
+printed in the terminal; if necessary, forward its port in VS Code's **Ports**
+panel. The default EEG channels are `C3-TP10` for ANPHY and `C3-RPA` for DOD-H:
+
+```bash
+python tools/view_eeg_npz.py --dataset ANPHY
+python tools/view_eeg_npz.py --dataset DOD-H --window-seconds 60
+```
+
+The viewer expects `.npz` files under `dset/<dataset>/npz/<channel>/`. Use the
+window menu for periods up to one hour or select **Full recording** to display
+the whole EEG and sleep-stage timeline at once. Sleep stages have a fixed
+color legend below the timeline; click one or more classes to highlight their
+matching EEG intervals. Click a selected class again to remove its highlight.
+Use the mouse wheel or arrow keys to scroll through time; the visible slider's
+labeled time axis shows its current position. In **Full recording** mode, the
+slider scrubs a selected time across the complete timeline. Press `n`/`p` to
+switch recordings. Stop it with `Ctrl+C` in the terminal. A custom folder can
+be selected with `--data-dir`.
+
 #### Sleep-EDF dataset
 1. Download `Sleep-EDF-201X` dataset via following command. (`X` will be `3` or `8`)
 ```
