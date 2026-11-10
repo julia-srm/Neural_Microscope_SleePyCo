@@ -10,13 +10,15 @@ import argparse, glob, os, re
 import numpy as np, pandas as pd
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from specparam import SpectralModel
 from scipy.signal import welch
 from scipy.stats import mannwhitneyu
 from scipy.stats import ttest_ind   # oben bei den Imports ergänzen
 
 BANDS = {"Delta/K (1-3 Hz)": (1, 3), "Theta (4-7 Hz)": (4, 7), "Alpha (8-13 Hz)": (8, 13),
          "Spindel (12-14 Hz)": (12, 14), "Beta (13-40 Hz)": (13, 40)}
-TOTAL = (1, 40)                       # Referenzbereich für relative Leistung
+TOTAL = (0.3, 45)                       # Referenzbereich für relative Leistung
+WHITENING_RANGE = (0.3, 45)
 STAGES = {0: "W", 1: "N1", 2: "N2", 3: "N3", 4: "REM"}   # Label 6 etc. wird verworfen
 PALETTE = ["#1f77b4", "#e08a1e"]
 
@@ -35,6 +37,63 @@ def load_file(path, win_s=4):
     for name, (lo, hi) in BANDS.items():
         df[name] = band_power(f, P, lo, hi)
     return df, f, P, y
+
+
+def plot_whitened_psd(f, psd, groups, stages, colors, output_path):
+    if f.max() < WHITENING_RANGE[1] or not np.any(
+        (f >= WHITENING_RANGE[0]) & (f <= WHITENING_RANGE[1])
+    ):
+        raise ValueError(
+            f"Whitening requires PSD data covering {WHITENING_RANGE[0]}-"
+            f"{WHITENING_RANGE[1]} Hz; available range is {f[0]}-{f[-1]} Hz."
+        )
+
+    fig, axes = plt.subplots(2, len(stages), figsize=(3.4 * len(stages), 6),
+                             sharex=True, sharey="row")
+    for i, stage in enumerate(stages):
+        raw_ax, flat_ax = axes[:, i]
+        for ax in (raw_ax, flat_ax):
+            for lo, hi in BANDS.values():
+                ax.axvspan(lo, hi, color="grey", alpha=.06, zorder=0)
+
+        for group in groups:
+            subject_psds = psd.get((group, stage))
+            if not subject_psds:
+                continue
+            mean_psd = np.mean(subject_psds, axis=0)
+            model = SpectralModel(
+                peak_width_limits=[2, 8],
+                max_n_peaks=6,
+                min_peak_height=0.1,
+                aperiodic_mode="fixed",
+                verbose=False,
+            )
+            model.fit(f, mean_psd, list(WHITENING_RANGE))
+
+            freqs_used = model.data.freqs
+            power_log = model.data.power_spectrum
+            aperiodic_fit = model.results.model.get_component("aperiodic")
+            raw_ax.semilogy(freqs_used, 10 ** power_log, color=colors[group],
+                            label=f"{group} PSD")
+            raw_ax.semilogy(freqs_used, 10 ** aperiodic_fit, color=colors[group],
+                            linestyle="--", linewidth=1, label=f"{group} aperiodic fit")
+            flat_ax.plot(freqs_used, power_log - aperiodic_fit, color=colors[group],
+                         label=group)
+
+        raw_ax.set_title(stage)
+        raw_ax.set_xlim(*WHITENING_RANGE)
+        raw_ax.spines[["top", "right"]].set_visible(False)
+        flat_ax.axhline(0, color="black", linewidth=.7, linestyle=":")
+        flat_ax.set_xlabel("Frequency (Hz)")
+        flat_ax.spines[["top", "right"]].set_visible(False)
+
+    axes[0, 0].set_ylabel("PSD (µV²/Hz)")
+    axes[1, 0].set_ylabel("Whitened log10 power\n(aperiodic removed)")
+    axes[0, 0].legend(frameon=False, fontsize=8)
+    fig.suptitle("Whitened spectra and aperiodic fits by sleep stage")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200)
+    plt.close(fig)
 
 
 def main():
@@ -133,6 +192,7 @@ def main():
         a_.set_title(st); a_.set_xlabel("Hz"); a_.spines[["top", "right"]].set_visible(False)
     ax[0].set_ylabel("PSD (µV²/Hz)"); ax[0].legend(frameon=False, fontsize=8)
     plt.tight_layout(); plt.savefig(f"{a.out}/mean_psd_by_stage.png", dpi=200); plt.close()
+    plot_whitened_psd(f, psd, names, order, col, f"{a.out}/whitened_psd_by_stage.png")
     print(f"Fertig. Ergebnisse in {a.out}/")
 
 

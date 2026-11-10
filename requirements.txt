@@ -6,3 +6,5 @@ gdown
 optuna
 matplotlib
 pandas
+specparam
+zennit
