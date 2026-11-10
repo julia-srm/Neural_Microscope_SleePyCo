@@ -376,6 +376,10 @@ def analyze(cm_aa_path, cm_ab_path, name_a="A", name_b="B", out_dir="cm_analysis
     labels = [str(l) for l in (class_labels if class_labels is not None else range(k))]
     if len(labels) != k:
         raise ValueError(f"{len(labels)} Klassennamen übergeben, aber {k} Klassen in der Matrix.")
+    heatmap_labels = (
+        ["Wake", "N1", "N2", "N3", "REM"]
+        if class_labels is None and k == 5 else labels
+    )
     if min(n_a, n_b) < 10:
         warnings.warn(f"Nur {min(n_a, n_b)} Probanden in einem Datensatz: Bootstrap-Intervalle sind unzuverlässig.")
 
@@ -417,7 +421,7 @@ def analyze(cm_aa_path, cm_ab_path, name_a="A", name_b="B", out_dir="cm_analysis
     delta_sig = {key: np.nan_to_num(dm_p_holm[key], nan=1.0) < alpha for key in keys}
 
     # Abbildungen
-    fig_heatmaps(cm_aa, cm_ab, norm_aa, norm_ab, diff, sig, labels, name_a, name_b,
+    fig_heatmaps(cm_aa, cm_ab, norm_aa, norm_ab, diff, sig, heatmap_labels, name_a, name_b,
                  n_a, n_b, alpha, os.path.join(out_dir, "1_heatmaps.png"))
     fig_top_changes(diff, d_lo, d_hi, sig, labels, name_a, name_b, top_n, alpha,
                     os.path.join(out_dir, "2_top_changes.png"))
