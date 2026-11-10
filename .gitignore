@@ -130,10 +130,12 @@ dmypy.json
 
 datasets/
 *.pt
-*.pth
-*.npz
+#*.pth
+#*.npz
 *.edf
 *.log
 *.zip
 *.pdf
 results/
+wandb/
+dset/
